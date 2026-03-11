@@ -1,0 +1,1 @@
+ctfbot: python bot.py
