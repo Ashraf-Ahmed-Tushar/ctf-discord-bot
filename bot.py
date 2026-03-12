@@ -15,7 +15,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-solved_ids = set()
+known_solves = set()
 
 app = Flask('')
 
@@ -30,80 +30,83 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-async def check_solves():
+BLANK_LINE = "\u200e"  # special invisible character for consistent spacing
+
+async def get_solves():
+    url = f"{CTFD_URL}/api/v1/teams/{TEAM_ID}/solves"
+    headers = {"Authorization": f"Token {CTFD_TOKEN}"}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as resp:
+            data = await resp.json()
+    return data["data"]
+
+async def announce_solve(channel, solve):
+    challenge = solve["challenge"]["name"]
+    category = solve["challenge"]["category"]
+    points = solve["challenge"]["value"]
+    solver = solve["user"]["name"]
+
+    msg = f"""
+{BLANK_LINE}
+🚩 Challenge Solved
+
+🧩 {challenge}
+📂 {category}
+💰 {points}
+👨‍💻 {solver}
+{BLANK_LINE}
+"""
+    await channel.send(msg)
+
+async def solve_tracker():
     await client.wait_until_ready()
     channel = client.get_channel(CHANNEL_ID)
 
-    headers = {
-        "Authorization": f"Token {CTFD_TOKEN}"
-    }
+    solves = await get_solves()
+    solves.sort(key=lambda x: x["date"])
 
+    # announce past solves
+    for solve in solves:
+        solve_id = solve["id"]
+        known_solves.add(solve_id)
+        await announce_solve(channel, solve)
+        await asyncio.sleep(2)
+
+    # track new solves
     while not client.is_closed():
-
         try:
-
-            url = f"{CTFD_URL}/api/v1/teams/{TEAM_ID}/solves"
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as resp:
-                    data = await resp.json()
-
-            solves = data["data"]
-
+            solves = await get_solves()
             for solve in solves:
-
                 solve_id = solve["id"]
-
-                if solve_id not in solved_ids:
-
-                    solved_ids.add(solve_id)
-
-                    challenge = solve["challenge"]["name"]
-                    category = solve["challenge"]["category"]
-                    points = solve["challenge"]["value"]
-                    solver = solve["user"]["name"]
-
-                    embed = discord.Embed(
-                        title="🚩 Challenge Solved!",
-                        color=discord.Color.green()
-                    )
-
-                    embed.add_field(name="🧩 Challenge", value=challenge, inline=False)
-                    embed.add_field(name="📂 Category", value=category, inline=True)
-                    embed.add_field(name="💰 Points", value=points, inline=True)
-                    embed.add_field(name="👨‍💻 Solver", value=solver, inline=False)
-
-                    await channel.send(embed=embed)
-
+                if solve_id not in known_solves:
+                    known_solves.add(solve_id)
+                    await announce_solve(channel, solve)
         except Exception as e:
             print(e)
-
         await asyncio.sleep(60)
 
 @client.event
 async def on_message(message):
-
     if message.author == client.user:
         return
 
     if message.content == "!testsolve":
+        msg = f"""
+{BLANK_LINE}
+🚩 Challenge Solved
 
-        embed = discord.Embed(
-            title="🚩 Challenge Solved!",
-            color=discord.Color.green()
-        )
-
-        embed.add_field(name="🧩 Challenge", value="Buffer Overflow 1", inline=False)
-        embed.add_field(name="📂 Category", value="Pwn", inline=True)
-        embed.add_field(name="💰 Points", value="200", inline=True)
-        embed.add_field(name="👨‍💻 Solver", value="_2shar_", inline=False)
-
-        await message.channel.send(embed=embed)
+🧩 Buffer Overflow 1
+📂 Pwn
+💰 200
+👨‍💻 _2shar_
+{BLANK_LINE}
+"""
+        await message.channel.send(msg)
 
 @client.event
 async def on_ready():
-    print("Bot Online")
-    client.loop.create_task(check_solves())
+    print(f"Logged in as {client.user}")
+    client.loop.create_task(solve_tracker())
 
 keep_alive()
 client.run(TOKEN)
