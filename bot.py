@@ -35,7 +35,11 @@ FOOTER_TAG = "solve_id:"  # embedded in real embed footers for restart dedup
 #     "team_id":    117
 #   }
 # }
-CTF_CONFIGS: dict[str, dict] = json.loads(os.getenv("CTF_CONFIGS", "{}"))
+try:
+    CTF_CONFIGS = json.loads(os.getenv("CTF_CONFIGS", "{}"))
+except Exception as e:
+    print("CTF_CONFIGS parse error:", e)
+    CTF_CONFIGS = {}
 
 # Per-channel memory: channel_id (int) → set of solve IDs already posted
 channel_posted_ids: dict[int, set[int]] = {}
