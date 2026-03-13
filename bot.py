@@ -128,28 +128,36 @@ def fetch_solves(cfg: dict) -> list[dict]:
 # ── Discord embed builder ────────────────────────────────────────────────────
 
 
-def build_embed(solve: dict,
-                ctf_name: str = "",
-                *,
-                test: bool = False) -> discord.Embed:
-    embed = discord.Embed(
-        title="🚩 Challenge Solved!",
-        color=discord.Color.green(),
-    )
-    if ctf_name:
-        embed.set_author(name=f"📡 {ctf_name}")
-    embed.add_field(name="🧩 Challenge",
-                    value=solve["challenge_name"],
-                    inline=False)
-    embed.add_field(name="📂 Category", value=solve["category"], inline=True)
-    embed.add_field(name="💰 Points", value=str(solve["points"]), inline=True)
-    embed.add_field(name="👤 Solver", value=solve["solver"], inline=False)
-    embed.add_field(name="🕐 Solved At", value=solve["solved_at"], inline=False)
+from datetime import datetime, timedelta
 
-    # Real embeds carry the solve ID in the footer so we can recover state after restart.
-    # Test embeds use a different footer so they don't affect dedup.
-    embed.set_footer(text="🧪 Test message — not tracked"
-                     if test else f"{FOOTER_TAG}{solve['id']}")
+def build_embed(solve, ctf_name=""):
+    # Solve time UTC → BDT
+    try:
+        dt = datetime.fromisoformat(solve["raw_date"])
+        bdt = dt + timedelta(hours=6)  # UTC to BDT
+        time_str = bdt.strftime("%I:%M %p (BDT)")
+    except Exception:
+        time_str = solve["solved_at"]
+
+    # Cyanish-purple color
+    embed_color = discord.Color.from_rgb(100, 149, 237)  # Cornflower Blue-ish
+
+    # Embed description with Markdown + line breaks
+    embed_desc = f"""
+🚩 **{ctf_name} — Challenge Solved**
+
+🧩 **{solve['challenge_name']}**
+📂 {solve['category']} • 💰 **{solve['points']} pts**
+
+👤 **Solver:** **{solve['solver']}**
+🕐 {time_str}
+"""
+
+    embed = discord.Embed(description=embed_desc, color=embed_color)
+
+    # Footer for internal tracking (small, non-intrusive)
+    embed.set_footer(text=f"{FOOTER_TAG}{solve['id']}", icon_url="")  
+
     return embed
 
 
