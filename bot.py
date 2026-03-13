@@ -17,29 +17,29 @@ import os
 
 BOT_TOKEN = os.getenv("TOKEN")
 POLL_SECS = int(os.getenv("POLL_SECONDS", "35"))
-FOOTER_TAG = "solve_id:"  # embedded in real embed footers for restart dedup
+FOOTER_TAG = "solve_id:"
 
-# CTF_CONFIGS maps Discord channel IDs (as strings) to CTF configs.
-# Paste the JSON as a single env var. Example:
-# {
-#   "1111111111111111111": {
-#     "ctf_name":   "CodeVinci CTF",
-#     "ctf_url":    "https://challs.codevinci.it",
-#     "ctfd_token": "ctfd_abc123",   <-- null if public API (no auth needed)
-#     "team_id":    0                <-- 0 = solo mode (/users/me), else team ID
-#   },
-#   "2222222222222222222": {
-#     "ctf_name":   "UTCTF 2026",
-#     "ctf_url":    "https://utctf.live",
-#     "ctfd_token": null,
-#     "team_id":    117
-#   }
-# }
-try:
-    CTF_CONFIGS = json.loads(os.getenv("CTF_CONFIGS", "{}"))
-except Exception as e:
-    print("CTF_CONFIGS parse error:", e)
-    CTF_CONFIGS = {}
+def load_ctfs():
+    ctfs = {}
+
+    for i in range(1, 10):
+        ch = os.getenv(f"CHANNEL{i}_ID")
+        if not ch:
+            continue
+
+        ctfs[ch] = {
+            "ctf_name": os.getenv(f"CTF{i}_NAME"),
+            "ctf_url": os.getenv(f"CTF{i}_URL"),
+            "ctfd_token": os.getenv(f"CTF{i}_TOKEN"),
+            "team_id": int(os.getenv(f"CTF{i}_TEAM", "0"))
+        }
+
+    return ctfs
+
+
+CTF_CONFIGS = load_ctfs()
+
+print("Loaded configs:", CTF_CONFIGS)
 
 # Per-channel memory: channel_id (int) → set of solve IDs already posted
 channel_posted_ids: dict[int, set[int]] = {}
