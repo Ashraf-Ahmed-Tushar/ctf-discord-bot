@@ -83,53 +83,81 @@ def _cf_session(origin: str):
 def _api_get(ctf_url: str, token: str | None, path: str):
     """
     GET /api/v1{path} on ctf_url.
-    Tries plain requests first; falls back to cloudscraper on Cloudflare block.
-    Returns the 'data' field of the JSON response, or None on failure.
+
+    Attempt order:
+      1. Plain requests WITH token
+      2. Plain requests WITHOUT token  ← if token caused 403, public access may work
+      3. Cloudscraper WITH token       ← Cloudflare bypass
+      4. Cloudscraper WITHOUT token    ← Cloudflare bypass + public access
+
+    Returns the 'data' field of the JSON response, or None on all failures.
     """
-    headers = {
-        "Content-Type":  "application/json",
-        "Accept":        "application/json",
-    }
-    if token:
-        headers["Authorization"] = f"Token {token}"
+    full_url     = f"{ctf_url}/api/v1{path}"
+    base_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    auth_headers = {**base_headers, "Authorization": f"Token {token}"} if token else base_headers
 
-    full_url = f"{ctf_url}/api/v1{path}"
+    def _parse(r):
+        try:
+            return r.json().get("data")
+        except Exception:
+            return None
 
-    # ── Attempt 1: plain requests ─────────────────────────────────────────────
+    # ── Attempt 1: plain requests WITH token ──────────────────────────────────
+    got_403_with_token = False
     try:
-        r = requests.get(full_url, headers=headers, allow_redirects=False, timeout=15)
+        r = requests.get(full_url, headers=auth_headers, allow_redirects=False, timeout=15)
         if r.status_code == 200 and not _is_cf_block(r):
-            try:
-                return r.json().get("data")
-            except Exception:
-                pass
-        if not _is_cf_block(r) and r.status_code not in (301, 302, 307, 308):
+            return _parse(r)
+        if _is_cf_block(r) or r.status_code in (301, 302, 307, 308):
+            pass  # fall through to cloudscraper
+        elif r.status_code == 403 and token:
+            print(f"  ⚠️  [{path}] 403 with token — retrying without token (public access)")
+            got_403_with_token = True
+        else:
             print(f"  ⚠️  [{path}] HTTP {r.status_code}")
             return None
-        # Fall through to cloudscraper
     except Exception as e:
         print(f"  ⚠️  [{path}] requests error: {e}")
 
-    # ── Attempt 2: cloudscraper ───────────────────────────────────────────────
+    # ── Attempt 2: plain requests WITHOUT token (public access fallback) ──────
+    if token and got_403_with_token:
+        try:
+            r2 = requests.get(full_url, headers=base_headers, allow_redirects=False, timeout=15)
+            if r2.status_code == 200 and not _is_cf_block(r2):
+                data = _parse(r2)
+                if data is not None:
+                    print(f"  ✅ [{path}] public access (no token) OK")
+                    return data
+            if not _is_cf_block(r2) and r2.status_code not in (301, 302, 307, 308, 403):
+                print(f"  ⚠️  [{path}] public retry HTTP {r2.status_code}")
+                return None
+        except Exception as e:
+            print(f"  ⚠️  [{path}] public retry error: {e}")
+
+    # ── Attempt 3 & 4: cloudscraper (Cloudflare bypass) ──────────────────────
     if not _CS_AVAILABLE:
         print(f"  ❌ [{path}] Cloudflare blocked + cloudscraper missing")
         return None
-    try:
-        sess = _cf_session(ctf_url)
-        if sess is None:
-            return None
-        r2 = sess.get(full_url, headers=headers, allow_redirects=True, timeout=25)
-        if r2.status_code == 200:
-            try:
-                data = r2.json().get("data")
-                print(f"  ✅ cloudscraper OK [{path}]")
-                return data
-            except Exception:
-                print(f"  ❌ [{path}] cloudscraper: non-JSON response")
-                return None
-        print(f"  ❌ [{path}] cloudscraper HTTP {r2.status_code}")
-    except Exception as e:
-        print(f"  ❌ [{path}] cloudscraper error: {e}")
+
+    sess = _cf_session(ctf_url)
+    if sess is None:
+        return None
+
+    for hdrs, label in [(auth_headers, "with token"), (base_headers, "no token")]:
+        if hdrs is auth_headers and not token:
+            continue
+        if hdrs is base_headers and not token:
+            break
+        try:
+            rc = sess.get(full_url, headers=hdrs, allow_redirects=True, timeout=25)
+            if rc.status_code == 200:
+                data = _parse(rc)
+                if data is not None:
+                    print(f"  ✅ cloudscraper OK [{path}] ({label})")
+                    return data
+            print(f"  ❌ [{path}] cloudscraper {label} HTTP {rc.status_code}")
+        except Exception as e:
+            print(f"  ❌ [{path}] cloudscraper {label} error: {e}")
 
     return None
 
@@ -414,6 +442,139 @@ def build_final_stats_embed(ctf_name: str, team_name: str,
     return embed
 
 
+# ── CTFtime upcoming events ────────────────────────────────────────────────────
+
+def fetch_upcoming_ctfs(limit: int = 10) -> list[dict]:
+    """Fetch the next {limit} upcoming CTFs from CTFtime public API."""
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    far_ts = now_ts + 60 * 60 * 24 * 365
+    url = (
+        f"https://ctftime.org/api/v1/events/"
+        f"?limit={limit}&start={now_ts}&finish={far_ts}"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; CTF-SolveTrackerBot/1.0)",
+        "Accept":     "application/json",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            return r.json()
+        print(f"  ⚠️  CTFtime API returned HTTP {r.status_code}")
+    except Exception as e:
+        print(f"  ❌ CTFtime fetch error: {e}")
+    return []
+
+
+def _fmt_ctftime_dt(iso_str: str) -> str:
+    """Parse CTFtime ISO datetime and return BDT (UTC+6) formatted string."""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        bdt = dt + timedelta(hours=6)
+        return bdt.strftime("%b %d, %Y  %I:%M %p (BDT)")
+    except Exception:
+        return iso_str
+
+
+def _duration_str(start_iso: str, finish_iso: str) -> str:
+    """Return human-readable duration between two ISO timestamps."""
+    try:
+        s = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        f = datetime.fromisoformat(finish_iso.replace("Z", "+00:00"))
+        delta = f - s
+        days  = delta.days
+        hours = delta.seconds // 3600
+        if days and hours:
+            return f"{days}d {hours}h"
+        if days:
+            return f"{days} day(s)"
+        return f"{hours} hour(s)"
+    except Exception:
+        return "?"
+
+
+_FORMAT_ICON = {
+    "jeopardy":           "🚩 Jeopardy",
+    "attack-defence":     "⚔️ Attack-Defence",
+    "ad":                 "⚔️ Attack-Defence",
+    "king of the hill":   "👑 King of the Hill",
+    "hardware":           "🔧 Hardware",
+}
+
+_RESTRICT_ICON = {
+    "open":         "🌍 Open",
+    "prequalified": "🎫 Pre-qualified",
+    "academic":     "🎓 Academic",
+    "onsite":       "📍 On-site",
+}
+
+
+def build_upcoming_embed(event: dict, index: int) -> discord.Embed:
+    """Build a rich Discord embed for a single CTFtime event."""
+    title       = event.get("title", "Unknown CTF")
+    ctftime_url = event.get("ctftime_url") or f"https://ctftime.org/event/{event.get('id','')}"
+    site_url    = event.get("url") or ""
+    discord_url = event.get("discord") or ""
+    fmt_raw     = (event.get("format") or "?").strip()
+    fmt_label   = _FORMAT_ICON.get(fmt_raw.lower(), f"🎯 {fmt_raw}")
+    restr_raw   = (event.get("restrictions") or "Open").strip()
+    restr_label = _RESTRICT_ICON.get(restr_raw.lower(), f"🔒 {restr_raw}")
+    weight      = float(event.get("weight") or 0)
+    start_iso   = event.get("start", "")
+    finish_iso  = event.get("finish", "")
+    organizers  = event.get("organizers") or []
+    org_names   = ", ".join(o.get("name", "?") for o in organizers) or "?"
+    logo_url    = event.get("logo") or ""
+    participants = event.get("participants") or 0
+
+    if weight >= 30:
+        color = discord.Color.from_rgb(255, 215, 0)
+    elif weight >= 15:
+        color = discord.Color.from_rgb(100, 149, 237)
+    elif weight > 0:
+        color = discord.Color.from_rgb(130, 100, 200)
+    else:
+        color = discord.Color.from_rgb(110, 110, 110)
+
+    weight_str = f"⭐ {weight:.2f}" if weight > 0 else "⭐ Unrated"
+
+    embed = discord.Embed(
+        title=f"{index}. {title}",
+        url=ctftime_url,
+        color=color,
+    )
+
+    if logo_url:
+        embed.set_thumbnail(url=logo_url)
+
+    embed.add_field(name="🎯 Format", value=fmt_label,   inline=True)
+    embed.add_field(name="👥 Type",   value=restr_label, inline=True)
+    embed.add_field(name="⭐ Weight", value=weight_str,  inline=True)
+
+    embed.add_field(
+        name="📅 Starts",
+        value=_fmt_ctftime_dt(start_iso),
+        inline=False,
+    )
+    embed.add_field(
+        name="🏁 Ends",
+        value=f"{_fmt_ctftime_dt(finish_iso)}  *(duration: {_duration_str(start_iso, finish_iso)})*",
+        inline=False,
+    )
+
+    if site_url:
+        embed.add_field(name="🌐 Website", value=site_url, inline=True)
+    if discord_url:
+        embed.add_field(name="💬 Discord", value=discord_url, inline=True)
+    if participants:
+        embed.add_field(name="🧑‍💻 Last participants", value=str(participants), inline=True)
+
+    embed.set_footer(text=f"By: {org_names}  •  CTFtime")
+    return embed
+
+
 # ── Restart recovery ───────────────────────────────────────────────────────────
 
 async def recover_channel(channel) -> tuple[set[int], bool]:
@@ -529,7 +690,7 @@ def _cfg(ctx) -> dict | None:
 async def cmd_solves(ctx):
     cfg = _cfg(ctx)
     if not cfg:
-        await ctx.send(f"❌ Channel `{ctx.channel.id}` not configured. Use `!ctfs`.")
+        await ctx.send(f"❌ Channel `{ctx.channel.id}` not configured. Use `;ctfs`.")
         return
     solves = fetch_solves(cfg)
     if not solves:
@@ -620,10 +781,10 @@ async def cmd_rank(ctx):
 
 @bot.command(name="members")
 async def cmd_members(ctx):
-    """!members — list all team members with their usernames."""
+    """;members — list all team members with their usernames."""
     cfg = _cfg(ctx)
     if not cfg:
-        await ctx.send(f"❌ Channel `{ctx.channel.id}` not configured. Use `!ctfs`.")
+        await ctx.send(f"❌ Channel `{ctx.channel.id}` not configured. Use `;ctfs`.")
         return
 
     url     = cfg["ctf_url"]
@@ -636,7 +797,7 @@ async def cmd_members(ctx):
 
     team_data = _api_get(url, token, f"/teams/{team_id}")
     if not team_data:
-        await ctx.send("❌ Could not fetch team data. Check the token or try `!debug`.")
+        await ctx.send("❌ Could not fetch team data. Check the token or try `;debug`.")
         return
 
     team_name  = team_data.get("name") or team_data.get("team_name") or "Unknown Team"
@@ -670,18 +831,37 @@ async def cmd_members(ctx):
     embed = discord.Embed(
         title=f"👥  {team_name}  —  Team Roster",
         description=lines.strip(),
-        color=discord.Color.from_rgb(88, 101, 242),  # Discord blurple-ish
+        color=discord.Color.from_rgb(88, 101, 242),
     )
     embed.set_footer(text=f"{cfg['ctf_name']}  •  {len(member_names)} member(s)")
 
     await ctx.send(embed=embed)
 
 
+@bot.command(name="upcoming")
+async def cmd_upcoming(ctx):
+    """;upcoming — show the next 10 upcoming CTFs from CTFtime."""
+    msg = await ctx.send("⏳ Fetching upcoming CTFs from CTFtime…")
+    events = fetch_upcoming_ctfs(limit=10)
+
+    if not events:
+        await msg.edit(content="❌ Could not fetch CTFtime data. Try again in a moment.")
+        return
+
+    await msg.edit(content=(
+        f"## 📅  Upcoming CTFs  —  Next {len(events)}\n"
+        f"-# Times shown in BDT (UTC+6)  •  Click a title to open CTFtime page"
+    ))
+
+    for i, event in enumerate(events, start=1):
+        await ctx.send(embed=build_upcoming_embed(event, i))
+
+
 @bot.command(name="status")
 async def cmd_status(ctx):
     cfg = _cfg(ctx)
     if not cfg:
-        await ctx.send(f"❌ Channel `{ctx.channel.id}` not configured. Use `!ctfs`.")
+        await ctx.send(f"❌ Channel `{ctx.channel.id}` not configured. Use `;ctfs`.")
         return
     url     = cfg["ctf_url"]
     token   = cfg.get("ctfd_token") or None
@@ -725,7 +905,7 @@ async def cmd_ctfs(ctx):
 
 @bot.command(name="debug")
 async def cmd_debug(ctx):
-    """!debug — prints raw API responses to Render logs for diagnosis."""
+    """;debug — prints raw API responses to Render logs for diagnosis."""
     cfg = _cfg(ctx)
     if not cfg:
         await ctx.send(f"❌ Channel `{ctx.channel.id}` not configured.")
@@ -766,6 +946,7 @@ if __name__ == "__main__":
     if not CTF_CONFIGS:
         print("⚠️  No CTF channels configured.")
     bot.run(BOT_TOKEN)
+
 
 """
 CTF Solve Tracker — Discord Bot
