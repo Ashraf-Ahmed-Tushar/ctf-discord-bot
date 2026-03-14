@@ -379,10 +379,12 @@ def build_embed(solve: dict, ctf_name: str, team_name: str = "",
     if test:
         desc = "🧪 **[TEST]** " + desc
 
-    desc += f"\n\u200B{FOOTER_TAG}{solve['id']}\u200B"
-
-    return discord.Embed(description=desc, color=discord.Color.from_rgb(100, 149, 237))
-
+    embed = discord.Embed(
+    description=desc,
+    color=discord.Color.from_rgb(100, 149, 237)
+    )
+    embed.set_footer(text=f"{FOOTER_TAG}{solve['id']}")
+    return embed
 
 def build_final_stats_embed(ctf_name: str, team_name: str,
                              rank: int, total: int,
@@ -405,11 +407,10 @@ def build_final_stats_embed(ctf_name: str, team_name: str,
         f"💰 Total Points: **{total_points}**\n\n"
         f"**Member Breakdown:**\n{lines}"
         f"{congrats}"
-        f"\n\u200B{FOOTER_FINAL_TAG}{ctf_name}\u200B"
     )
 
     embed = discord.Embed(description=desc, color=discord.Color.from_rgb(255, 215, 0))
-    embed.set_footer(text="CTF complete • GG everyone!")
+    embed.set_footer(text=f"{FOOTER_FINAL_TAG}{ctf_name} • CTF complete")
     return embed
 
 
@@ -423,14 +424,14 @@ async def recover_channel(channel) -> tuple[set[int], bool]:
             if msg.author.id != bot.user.id:
                 continue
             for embed in msg.embeds:
-                text = embed.description or ""
-                m = re.search(r'\u200B' + re.escape(FOOTER_TAG) + r'(\d+)\u200B', text)
+                text = (embed.footer.text if embed.footer else "") or ""
+                m = re.search(re.escape(FOOTER_TAG) + r'(\d+)', text)
                 if m:
                     try:
                         recovered.add(int(m.group(1)))
                     except ValueError:
                         pass
-                if re.search(r'\u200B' + re.escape(FOOTER_FINAL_TAG), text):
+                if re.search(re.escape(FOOTER_FINAL_TAG), text):
                     final_posted = True
     except Exception as e:
         print(f"  ⚠️  History scan failed #{channel.name}: {e}")
@@ -465,9 +466,9 @@ async def poll_loop():
 
                 if new_solves:
                     team_name   = fetch_team_name(cfg)
-                    rank, total = fetch_rank(cfg)
 
                     for solve in new_solves:
+                        rank, total = fetch_rank(cfg)
                         await channel.send(embed=build_embed(
                             solve, ctf_name, team_name, rank, total
                         ))
