@@ -17,10 +17,16 @@ except ImportError:
     print("    Fix: add 'cloudscraper' to requirements.txt and redeploy")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-BOT_TOKEN        = os.getenv("TOKEN")
-POLL_SECS        = int(os.getenv("POLL_SECONDS", "35"))
-FOOTER_TAG       = "solve_id:"
-FOOTER_FINAL_TAG = "final_stats_id:"
+BOT_TOKEN             = os.getenv("TOKEN")
+POLL_SECS             = int(os.getenv("POLL_SECONDS", "35"))
+FOOTER_TAG            = "solve_id:"
+FOOTER_FINAL_TAG      = "final_stats_id:"
+FOOTER_UPCOMING_TAG   = "ctftime_id:"
+
+# Upcoming auto-post config
+UPCOMING_CHANNEL_ID   = os.getenv("UPCOMING_CHANNEL_ID", "").strip() or None
+UPCOMING_POLL_MINUTES = int(os.getenv("UPCOMING_POLL_MINUTES", "10"))
+UPCOMING_FETCH_COUNT  = int(os.getenv("UPCOMING_FETCH_COUNT", "10"))
 
 
 # ── Config loader ─────────────────────────────────────────────────────────────
@@ -46,6 +52,9 @@ print("Loaded configs:", CTF_CONFIGS)
 # Per-channel memory
 channel_posted_ids:   dict[int, set[int]] = {}
 channel_final_posted: set[int]            = set()
+
+# Upcoming auto-post memory  (CTFtime event IDs already posted)
+upcoming_posted_ids:  set[int]            = set()
 
 # One cloudscraper session per origin (reused across calls)
 _cf_sessions: dict[str, object] = {}
@@ -569,10 +578,73 @@ def build_upcoming_embed(event: dict, index: int) -> discord.Embed:
     if discord_url:
         embed.add_field(name="💬 Discord", value=discord_url, inline=True)
     if participants:
-        embed.add_field(name="🧑‍💻 Last participants", value=str(participants), inline=True)
+        embed.add_field(name="🧑‍💻 Interested participants", value=str(participants), inline=True)
 
-    embed.set_footer(text=f"By: {org_names}  •  CTFtime")
+    embed.set_footer(text=f"By: {org_names}  •  CTFtime  •  {FOOTER_UPCOMING_TAG}{event.get('id','')}")
     return embed
+
+
+# ── Upcoming auto-post: recovery + poll loop ───────────────────────────────────
+
+async def recover_upcoming_channel(channel) -> set[int]:
+    """Scan channel history and return set of CTFtime event IDs already posted."""
+    recovered: set[int] = set()
+    try:
+        async for msg in channel.history(limit=300):
+            if msg.author.id != bot.user.id:
+                continue
+            for embed in msg.embeds:
+                text = (embed.footer.text if embed.footer else "") or ""
+                m = re.search(re.escape(FOOTER_UPCOMING_TAG) + r'(\d+)', text)
+                if m:
+                    try:
+                        recovered.add(int(m.group(1)))
+                    except ValueError:
+                        pass
+    except Exception as e:
+        print(f"  ⚠️  Upcoming history scan failed #{channel.name}: {e}")
+    print(f"  📜 #{channel.name} (upcoming): {len(recovered)} event(s) already posted")
+    return recovered
+
+
+async def upcoming_poll_loop():
+    """Auto-post new upcoming CTFs to UPCOMING_CHANNEL_ID every UPCOMING_POLL_MINUTES."""
+    await bot.wait_until_ready()
+
+    if not UPCOMING_CHANNEL_ID:
+        print("ℹ️  UPCOMING_CHANNEL_ID not set — auto upcoming disabled")
+        return
+
+    channel = bot.get_channel(int(UPCOMING_CHANNEL_ID))
+    if not channel:
+        print(f"⚠️  Upcoming channel {UPCOMING_CHANNEL_ID} not found")
+        return
+
+    # Recover already-posted IDs from history
+    recovered = await recover_upcoming_channel(channel)
+    upcoming_posted_ids.update(recovered)
+
+    print(f"🔄 Upcoming auto-post: #{channel.name} every {UPCOMING_POLL_MINUTES} min")
+
+    while not bot.is_closed():
+        try:
+            events = fetch_upcoming_ctfs(limit=UPCOMING_FETCH_COUNT)
+            new_events = [e for e in events if int(e.get("id", 0)) not in upcoming_posted_ids]
+
+            if new_events:
+                await channel.send(
+                    f"## 📅  New Upcoming CTFs  —  {len(new_events)} added\n"
+                    f"-# Times in BDT (UTC+6)  •  Click a title to open CTFtime page"
+                )
+                for i, event in enumerate(new_events, start=1):
+                    await channel.send(embed=build_upcoming_embed(event, i))
+                    upcoming_posted_ids.add(int(event.get("id", 0)))
+                    print(f"📅 [upcoming] Posted: {event.get('title','?')} (id {event.get('id')})")
+        except Exception as e:
+            print(f"❌ Upcoming poll error: {e}")
+            traceback.print_exc()
+
+        await asyncio.sleep(UPCOMING_POLL_MINUTES * 60)
 
 
 # ── Restart recovery ───────────────────────────────────────────────────────────
@@ -946,19 +1018,3 @@ if __name__ == "__main__":
     if not CTF_CONFIGS:
         print("⚠️  No CTF channels configured.")
     bot.run(BOT_TOKEN)
-
-
-"""
-CTF Solve Tracker — Discord Bot
-Multi-CTF, multi-channel. Cloudflare-aware.
-
-Env vars:
-  TOKEN              — Discord bot token
-  POLL_SECONDS       — poll interval seconds (default 35)
-  CHANNEL{n}_ID      — Discord channel ID
-  CTF{n}_NAME        — display name
-  CTF{n}_URL         — base URL  e.g. https://uapctf.qzz.io
-  CTF{n}_TOKEN       — API token (blank = no auth / public)
-  CTF{n}_TEAM        — team ID   (0 = solo, uses /users/me)
-  CTF{n}_END_TIME    — UTC end time e.g. 2026-04-15T18:00:00  (optional)
-"""
