@@ -6,6 +6,11 @@ import re
 from datetime import datetime, timedelta, timezone
 import asyncio
 import os
+from datetime import datetime
+
+def to_unix(start_iso: str) -> int:
+    dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+    return int(dt.timestamp())
 
 # ── cloudscraper (optional, needed for Cloudflare-protected sites) ────────────
 try:
@@ -562,15 +567,22 @@ def build_upcoming_embed(event: dict, index: int) -> discord.Embed:
     embed.add_field(name="👥 Type",   value=restr_label, inline=True)
     embed.add_field(name="⭐ Weight", value=weight_str,  inline=True)
 
+    ts_start = to_unix(start_iso)
     embed.add_field(
-        name="📅 Starts",
-        value=_fmt_ctftime_dt(start_iso),
-        inline=False,
+        name="📅 Start Time",
+        value=f"<t:{ts_start}:F>",
+        inline=True
     )
     embed.add_field(
+        name="⏳ Starts in",
+        value=f"<t:{ts_start}:R>",
+        inline=True
+    )
+    ts_end = to_unix(finish_iso)
+    embed.add_field(
         name="🏁 Ends",
-        value=f"{_fmt_ctftime_dt(finish_iso)}  *(duration: {_duration_str(start_iso, finish_iso)})*",
-        inline=False,
+        value=f"<t:{ts_end}:F>  *(duration: {_duration_str(start_iso, finish_iso)})*",
+        inline=False
     )
 
     if site_url:
@@ -751,6 +763,7 @@ async def on_ready():
         else:
             print(f"⚠️  Channel {ch_id_str} not found at startup")
     asyncio.ensure_future(poll_loop())
+    asyncio.ensure_future(upcoming_poll_loop())
 
 
 def _cfg(ctx) -> dict | None:
