@@ -636,7 +636,8 @@ async def upcoming_poll_loop():
                     f"## 📅  New Upcoming CTFs  —  {len(new_events)} added\n"
                     f"-# Times in BDT (UTC+6)  •  Click a title to open CTFtime page"
                 )
-                for i, event in enumerate(new_events, start=1):
+                start_index = len(upcoming_posted_ids) + 1
+                for i, event in enumerate(new_events, start=start_index):
                     await channel.send(embed=build_upcoming_embed(event, i))
                     upcoming_posted_ids.add(int(event.get("id", 0)))
                     print(f"📅 [upcoming] Posted: {event.get('title','?')} (id {event.get('id')})")
