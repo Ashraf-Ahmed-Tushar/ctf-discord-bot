@@ -686,7 +686,11 @@ async def upcoming_poll_loop():
             ]
             
             # sort by start time (earliest first)
-            events = sorted(events, key=lambda e: e.get("start", ""))
+            events = sorted(
+                events,
+                key=lambda e: e.get("start", ""),
+                reverse=True
+            )
             
             # keep max 20
             events = events[:MAX_UPCOMING]
@@ -703,8 +707,8 @@ async def upcoming_poll_loop():
            # 🔥 reverse numbering
             total = len(events)
             
-            for idx, event in enumerate(events):
-                number = total - idx
+            for idx, event in enumerate(events, start=1):
+                number = idx
             
                 msg = await channel.send(
                     embed=build_upcoming_embed(event, number)
