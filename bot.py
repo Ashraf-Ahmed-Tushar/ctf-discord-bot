@@ -45,7 +45,7 @@ FOOTER_UPCOMING_TAG   = "ctftime_id:"
 # Upcoming auto-post config
 UPCOMING_CHANNEL_ID   = os.getenv("UPCOMING_CHANNEL_ID", "").strip() or None
 UPCOMING_POLL_MINUTES = int(os.getenv("UPCOMING_POLL_MINUTES", "10"))
-UPCOMING_HEADER_MSG_ID: int | None = None
+UPCOMING_HEADER_MSG_ID = None
 UPCOMING_MESSAGE_IDS: list[int] = []
 MAX_UPCOMING = 20
 UPCOMING_FETCH_COUNT = int(os.getenv("UPCOMING_FETCH_COUNT", "10"))
@@ -74,6 +74,7 @@ print("Loaded configs:", CTF_CONFIGS)
 # Per-channel memory
 channel_posted_ids:   dict[int, set[int]] = {}
 channel_final_posted: set[int]            = set()
+seen_solves_global: set[int] = set()
 
 # Upcoming auto-post memory  (CTFtime event IDs already posted)
 upcoming_posted_ids:  set[int]            = set()
@@ -768,7 +769,17 @@ async def poll_loop():
 
             try:
                 solves     = fetch_solves(cfg)
-                new_solves = [s for s in solves if s["id"] not in posted]
+                new_solves = []
+                
+                for s in solves:
+                    sid = s["id"]
+                
+                    # skip if already posted in THIS channel OR globally
+                    if sid in posted:
+                        continue
+                
+                    new_solves.append(s)
+                    seen_solves_global.add(sid)
 
                 if new_solves:
                     team_name   = fetch_team_name(cfg)
@@ -1091,7 +1102,6 @@ if __name__ == "__main__":
         raise SystemExit("❌ TOKEN env var not set!")
     if not CTF_CONFIGS:
         print("⚠️  No CTF channels configured.")
+    
+    keep_alive()
     bot.run(BOT_TOKEN)
-
-keep_alive()
-bot.run(TOKEN)
