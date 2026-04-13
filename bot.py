@@ -6,7 +6,6 @@ import re
 from datetime import datetime, timedelta, timezone
 import asyncio
 import os
-from datetime import datetime
 
 def to_unix(start_iso: str) -> int:
     dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
@@ -31,7 +30,10 @@ FOOTER_UPCOMING_TAG   = "ctftime_id:"
 # Upcoming auto-post config
 UPCOMING_CHANNEL_ID   = os.getenv("UPCOMING_CHANNEL_ID", "").strip() or None
 UPCOMING_POLL_MINUTES = int(os.getenv("UPCOMING_POLL_MINUTES", "10"))
-UPCOMING_FETCH_COUNT  = int(os.getenv("UPCOMING_FETCH_COUNT", "10"))
+UPCOMING_HEADER_MSG_ID: int | None = None
+UPCOMING_MESSAGE_IDS: list[int] = []
+MAX_UPCOMING = 20
+UPCOMING_FETCH_COUNT = int(os.getenv("UPCOMING_FETCH_COUNT", "10"))
 
 
 # ── Config loader ─────────────────────────────────────────────────────────────
@@ -157,11 +159,13 @@ def _api_get(ctf_url: str, token: str | None, path: str):
     if sess is None:
         return None
 
-    for hdrs, label in [(auth_headers, "with token"), (base_headers, "no token")]:
-        if hdrs is auth_headers and not token:
+    for use_token in [True, False]:
+        if use_token and not token:
             continue
-        if hdrs is base_headers and not token:
-            break
+
+        hdrs = auth_headers if use_token else base_headers
+        label = "with token" if use_token else "no token"
+
         try:
             rc = sess.get(full_url, headers=hdrs, allow_redirects=True, timeout=25)
             if rc.status_code == 200:
@@ -567,7 +571,7 @@ def build_upcoming_embed(event: dict, index: int) -> discord.Embed:
     embed.add_field(name="👥 Type",   value=restr_label, inline=True)
     embed.add_field(name="⭐ Weight", value=weight_str,  inline=True)
 
-    ts_start = to_unix(start_iso)
+    ts_start = to_unix(start_iso) if start_iso else int(datetime.now().timestamp())
     embed.add_field(
         name="📅 Start Time",
         value=f"<t:{ts_start}:F>",
@@ -578,7 +582,7 @@ def build_upcoming_embed(event: dict, index: int) -> discord.Embed:
         value=f"<t:{ts_start}:R>",
         inline=True
     )
-    ts_end = to_unix(finish_iso)
+    ts_end   = to_unix(finish_iso) if finish_iso else ts_start
     embed.add_field(
         name="🏁 Ends",
         value=f"<t:{ts_end}:F>  *(duration: {_duration_str(start_iso, finish_iso)})*",
@@ -620,6 +624,7 @@ async def recover_upcoming_channel(channel) -> set[int]:
 
 
 async def upcoming_poll_loop():
+    global UPCOMING_HEADER_MSG_ID, UPCOMING_MESSAGE_IDS
     """Auto-post new upcoming CTFs to UPCOMING_CHANNEL_ID every UPCOMING_POLL_MINUTES."""
     await bot.wait_until_ready()
 
@@ -628,9 +633,24 @@ async def upcoming_poll_loop():
         return
 
     channel = bot.get_channel(int(UPCOMING_CHANNEL_ID))
+
     if not channel:
         print(f"⚠️  Upcoming channel {UPCOMING_CHANNEL_ID} not found")
         return
+    header_msg = None
+    
+    if UPCOMING_HEADER_MSG_ID:
+        try:
+            header_msg = await channel.fetch_message(UPCOMING_HEADER_MSG_ID)
+        except:
+            header_msg = None
+    
+    if not header_msg:
+        header_msg = await channel.send(
+            "## 📅 Upcoming CTFs\n"
+            "-# Times in BDT (UTC+6)"
+        )
+        UPCOMING_HEADER_MSG_ID = header_msg.id
 
     # Recover already-posted IDs from history
     recovered = await recover_upcoming_channel(channel)
@@ -641,38 +661,43 @@ async def upcoming_poll_loop():
     while not bot.is_closed():
         try:
             events = fetch_upcoming_ctfs(limit=UPCOMING_FETCH_COUNT)
-            new_events = [e for e in events if int(e.get("id", 0)) not in upcoming_posted_ids]
-
-            if new_events:
-                # check existing bot messages in channel
-                existing_msgs = [m async for m in channel.history(limit=50) if m.author.id == bot.user.id]
-                if len(existing_msgs) + len(new_events) > 30:
-                    # delete oldest messages to keep max 30
-                    to_delete = len(existing_msgs) + len(new_events) - 30
-                    for m in existing_msgs[-to_delete:]:  # oldest messages last
-                        await m.delete()
-                        
-                await channel.send(
-                    f"## 📅  New Upcoming CTFs  —  {len(new_events)} added\n"
-                    f"-# Times in BDT (UTC+6)  •  Click a title to open CTFtime page"
+            
+            # ✅ only future events
+            now = datetime.now(timezone.utc)
+            events = [
+                e for e in events
+                if datetime.fromisoformat(e["start"].replace("Z","+00:00")) > now
+            ]
+            
+            # sort by start time (earliest first)
+            events = sorted(events, key=lambda e: e.get("start", ""))
+            
+            # keep max 20
+            events = events[:MAX_UPCOMING]
+            
+            # 🔥 delete old messages (perfect order maintain)
+            for msg_id in UPCOMING_MESSAGE_IDS:
+                try:
+                    msg = await channel.fetch_message(msg_id)
+                    await msg.delete()
+                except:
+                    pass
+            
+            UPCOMING_MESSAGE_IDS = []
+           # 🔥 reverse numbering
+            total = len(events)
+            
+            for idx, event in enumerate(events):
+                number = total - idx
+            
+                msg = await channel.send(
+                    embed=build_upcoming_embed(event, number)
                 )
-                new_events = list(reversed(new_events))  # newest first
-                start_index = 1  # newest CTF gets number 1
-                for i, event in enumerate(new_events, start=start_index):
-                    existing_msg = None
-                    async for msg in channel.history(limit=50):
-                        if msg.author.id != bot.user.id:
-                            continue
-                        for embed in msg.embeds:
-                            if embed.footer and str(event.get("id", 0)) in embed.footer.text:
-                                existing_msg = msg
-                                break
-                    if existing_msg:
-                        await existing_msg.edit(embed=build_upcoming_embed(event, i))
-                    else:
-                        await channel.send(embed=build_upcoming_embed(event, i))
-                    upcoming_posted_ids.add(int(event.get("id", 0)))
-                    print(f"📅 [upcoming] Posted: {event.get('title','?')} (id {event.get('id')})")
+            
+                UPCOMING_MESSAGE_IDS.append(msg.id)
+                upcoming_posted_ids.add(int(event.get("id", 0)))
+            
+                print(f"📅 [upcoming] Posted: {event.get('title','?')} (id {event.get('id')})")
         except Exception as e:
             print(f"❌ Upcoming poll error: {e}")
             traceback.print_exc()
