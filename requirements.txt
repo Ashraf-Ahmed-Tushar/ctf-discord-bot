@@ -2,3 +2,6 @@ discord.py>=2.3.0
 requests>=2.31.0
 cloudscraper>=1.2.71
 pymongo>=4.6.0
+flask
+pytz
+aiohttp
