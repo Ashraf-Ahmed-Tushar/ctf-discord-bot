@@ -6,6 +6,21 @@ import re
 from datetime import datetime, timedelta, timezone
 import asyncio
 import os
+from flask import Flask
+import threading
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    app.run(host='0.0.0.0', port=10000)
+
+def keep_alive():
+    t = threading.Thread(target=run)
+    t.start()
 
 def to_unix(start_iso: str) -> int:
     dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
@@ -1077,3 +1092,6 @@ if __name__ == "__main__":
     if not CTF_CONFIGS:
         print("⚠️  No CTF channels configured.")
     bot.run(BOT_TOKEN)
+
+keep_alive()
+bot.run(TOKEN)
