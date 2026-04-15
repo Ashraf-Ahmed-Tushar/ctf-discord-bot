@@ -699,11 +699,15 @@ async def upcoming_poll_loop():
                     old_msgs.append(msg.id)
 
                 # edit messages (10 → 1 visual order auto handled)
+                total = len(display_events)
+
                 for i, event in enumerate(display_events):
                     msg_id = old_msgs[i]
                     msg = await channel.fetch_message(msg_id)
-
-                    embed = build_upcoming_embed(event, i+1)
+                
+                    number = total - i 
+                
+                    embed = build_upcoming_embed(event, number)
                     await msg.edit(embed=embed, content=None)
 
                 UPCOMING_STATE["event_ids"] = new_ids
