@@ -78,6 +78,11 @@ seen_solves_global: set[int] = set()
 
 # Upcoming auto-post memory  (CTFtime event IDs already posted)
 upcoming_posted_ids:  set[int]            = set()
+UPCOMING_STATE = {
+    "event_ids": [],
+    "message_ids": [],
+    "header_id": None
+}
 
 # One cloudscraper session per origin (reused across calls)
 _cf_sessions: dict[str, object] = {}
@@ -640,8 +645,6 @@ async def recover_upcoming_channel(channel) -> set[int]:
 
 
 async def upcoming_poll_loop():
-    global UPCOMING_HEADER_MSG_ID, UPCOMING_MESSAGE_IDS
-    """Auto-post new upcoming CTFs to UPCOMING_CHANNEL_ID every UPCOMING_POLL_MINUTES."""
     await bot.wait_until_ready()
 
     if not UPCOMING_CHANNEL_ID:
@@ -653,71 +656,76 @@ async def upcoming_poll_loop():
     if not channel:
         print(f"⚠️  Upcoming channel {UPCOMING_CHANNEL_ID} not found")
         return
-    header_msg = None
-    
-    if UPCOMING_HEADER_MSG_ID:
-        try:
-            header_msg = await channel.fetch_message(UPCOMING_HEADER_MSG_ID)
-        except:
-            header_msg = None
-    
-    if not header_msg:
-        header_msg = await channel.send(
-            "## 📅 Upcoming CTFs\n"
-            "-# Times in BDT (UTC+6)"
-        )
-        UPCOMING_HEADER_MSG_ID = header_msg.id
 
-    # Recover already-posted IDs from history
-    recovered = await recover_upcoming_channel(channel)
-    upcoming_posted_ids.update(recovered)
-
-    print(f"🔄 Upcoming auto-post: #{channel.name} every {UPCOMING_POLL_MINUTES} min")
+    print("🚀 Upcoming system started (correct order mode)")
 
     while not bot.is_closed():
         try:
-            events = fetch_upcoming_ctfs(limit=UPCOMING_FETCH_COUNT)
-            
-            # ✅ only future events
+            events = fetch_upcoming_ctfs(limit=20)
             now = datetime.now(timezone.utc)
+
+            # only future events
             events = [
                 e for e in events
                 if datetime.fromisoformat(e["start"].replace("Z","+00:00")) > now
             ]
-            
-            # sort by start time (earliest first)
-            events = sorted(
-                events,
-                key=lambda e: e.get("start", ""),
-                reverse=True
-            )
-            
-            # keep max 20
-            events = events[:MAX_UPCOMING]
-            
-            # 🔥 delete old messages (perfect order maintain)
-            for msg_id in UPCOMING_MESSAGE_IDS:
-                try:
+
+            # sort (earliest first)
+            events = sorted(events, key=lambda e: e["start"])
+            events = events[:10]
+
+            # reverse for display (1 = most recent)
+            display_events = list(reversed(events))
+
+            new_ids = [e["id"] for e in display_events]
+
+            # update only if changed
+            if new_ids != UPCOMING_STATE["event_ids"]:
+                print("🔄 Updating upcoming messages...")
+
+                old_msgs = UPCOMING_STATE["message_ids"]
+
+                # ensure message count
+                while len(old_msgs) > len(display_events):
+                    msg_id = old_msgs.pop()
+                    try:
+                        msg = await channel.fetch_message(msg_id)
+                        await msg.delete()
+                    except:
+                        pass
+
+                while len(old_msgs) < len(display_events):
+                    msg = await channel.send("⏳ Updating...")
+                    old_msgs.append(msg.id)
+
+                # edit messages (10 → 1 visual order auto handled)
+                for i, event in enumerate(display_events):
+                    msg_id = old_msgs[i]
                     msg = await channel.fetch_message(msg_id)
-                    await msg.delete()
-                except:
-                    pass
-            
-            UPCOMING_MESSAGE_IDS = []
-           # 🔥 reverse numbering
-            total = len(events)
-            
-            for idx, event in enumerate(events, start=1):
-                number = idx
-            
-                msg = await channel.send(
-                    embed=build_upcoming_embed(event, number)
+
+                    embed = build_upcoming_embed(event, i+1)
+                    await msg.edit(embed=embed, content=None)
+
+                UPCOMING_STATE["event_ids"] = new_ids
+                UPCOMING_STATE["message_ids"] = old_msgs
+
+                # HEADER (always last message)
+                if UPCOMING_STATE["header_id"]:
+                    try:
+                        old = await channel.fetch_message(UPCOMING_STATE["header_id"])
+                        await old.delete()
+                    except:
+                        pass
+
+                header = await channel.send(
+                    "## 📅 Upcoming CTFs :arrow_heading_up:\n"
+                    "-# Times in BDT (UTC+6)"
                 )
-            
-                UPCOMING_MESSAGE_IDS.append(msg.id)
-                upcoming_posted_ids.add(int(event.get("id", 0)))
-            
-                print(f"📅 [upcoming] Posted: {event.get('title','?')} (id {event.get('id')})")
+
+                UPCOMING_STATE["header_id"] = header.id
+
+                print("✅ Updated successfully")
+
         except Exception as e:
             print(f"❌ Upcoming poll error: {e}")
             traceback.print_exc()
