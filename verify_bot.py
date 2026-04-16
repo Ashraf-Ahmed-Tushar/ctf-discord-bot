@@ -224,4 +224,4 @@ async def unverify(ctx):
     await ctx.send("Verification removed.")
 
 keep_alive()
-    bot.run(BOT_TOKEN)
+    bot.run(TOKEN)
