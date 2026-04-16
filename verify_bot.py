@@ -9,6 +9,21 @@ import requests
 from pymongo import MongoClient
 import asyncio
 import time
+from flask import Flask
+import threading
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    app.run(host='0.0.0.0', port=10000)
+
+def keep_alive():
+    t = threading.Thread(target=run)
+    t.start()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
@@ -208,4 +223,5 @@ async def unverify(ctx):
         await ctx.author.remove_roles(role)
     await ctx.send("Verification removed.")
 
-bot.run(TOKEN)
+keep_alive()
+    bot.run(BOT_TOKEN)
